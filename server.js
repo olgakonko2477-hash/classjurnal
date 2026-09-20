@@ -17,12 +17,13 @@ const loopback = host => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(host)
 export async function createApp(options = {}) {
   const dataDir = resolve(options.dataDir || process.env.DATA_DIR || join(root, 'data'));
   const store = new Store(dataDir);
+  const passwordRequired = options.passwordRequired ?? (process.env.REQUIRE_PASSWORD === 'true');
   const publicOrigin = options.publicOrigin ?? process.env.PUBLIC_ORIGIN;
   const secure = options.secure ?? (process.env.COOKIE_SECURE === 'true' || !!publicOrigin?.startsWith('https:'));
   if (publicOrigin && !publicOrigin.startsWith('https://')) throw new Error('PUBLIC_ORIGIN должен использовать HTTPS.');
   const password = options.password ?? process.env.JOURNAL_PASSWORD;
-  if (!store.meta('password') && password) { check(password.length >= 12 && password.length <= 256, 'Пароль должен содержать от 12 до 256 символов.'); store.setMeta('password', await hashPassword(password)); }
-  if (publicOrigin && !store.meta('password')) throw new Error('Для размещения задайте JOURNAL_PASSWORD перед первым запуском.');
+  if (passwordRequired && !store.meta('password') && password) { check(password.length >= 12 && password.length <= 256, 'Пароль должен содержать от 12 до 256 символов.'); store.setMeta('password', await hashPassword(password)); }
+  if (passwordRequired && publicOrigin && !store.meta('password')) throw new Error('Для размещения задайте JOURNAL_PASSWORD перед первым запуском.');
   const sessions = new Map(), attempts = new Map();
   const cookie = (token, age = 604800) => `journal_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${secure ? '; Secure' : ''}`;
   const body = async req => { let size = 0; const chunks = []; for await (const chunk of req) { size += chunk.length; if (size > 12 * 1024 * 1024) throw Object.assign(new Error('Файл слишком большой: максимум 12 МБ.'), { status: 413 }); chunks.push(chunk); } try { return JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch { check(false, 'Не удалось прочитать данные запроса.'); } };
@@ -42,10 +43,11 @@ export async function createApp(options = {}) {
       }
       const token = /(?:^|;\s*)journal_session=([a-f0-9]+)/.exec(req.headers.cookie || '')?.[1];
       const expires = sessions.get(token);
-      const authenticated = expires && expires > Date.now();
+      const authenticated = !passwordRequired || (expires && expires > Date.now());
       const localSetup = !publicOrigin && loopback(req.socket.remoteAddress);
       if (url.pathname === '/health' && method === 'GET') return json(200, { ok: true });
-      if (url.pathname === '/api/session' && method === 'GET') return json(200, { authenticated: !!authenticated, needsSetup: !store.meta('password'), canSetup: localSetup });
+      if (url.pathname === '/api/session' && method === 'GET') return json(200, { authenticated: !!authenticated, passwordRequired, needsSetup: passwordRequired && !store.meta('password'), canSetup: passwordRequired && localSetup });
+      if (!passwordRequired && ['/api/login', '/api/setup', '/api/password', '/api/logout'].includes(url.pathname)) return json(404, { error: 'Журнал работает без пароля.' });
       if (['/api/login', '/api/setup'].includes(url.pathname) && method === 'POST') {
         const key = req.socket.remoteAddress;
         let attempt = attempts.get(key); if (!attempt || attempt.until < Date.now()) { attempt = { count: 0, until: Date.now() + 600000 }; attempts.set(key, attempt); }
@@ -81,11 +83,11 @@ export async function createApp(options = {}) {
       res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` }); res.end(method === 'HEAD' ? undefined : readFileSync(join(root, 'public', asset[0])));
     } catch (e) { if (!res.headersSent) json(e.status || 400, { error: e.status || e.message && !e.code ? e.message : 'Не удалось сохранить данные. Повторите попытку.' }); else res.end(); }
   });
-  return { server, store };
+  return { server, store, passwordRequired };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { server, store } = await createApp();
+  const { server, store, passwordRequired } = await createApp();
   const port = Number(process.env.PORT || 3000), host = process.env.HOST || '127.0.0.1';
-  server.listen(port, host, () => console.log(`Журнал учителя: ${process.env.PUBLIC_ORIGIN || `http://localhost:${port}`}\nДанные: ${resolve(process.env.DATA_DIR || './data')}\n${store.meta('password') ? 'Вход защищён паролем.' : 'Откройте сайт на этом компьютере и задайте пароль.'}`));
+  server.listen(port, host, () => console.log(`Журнал учителя: ${process.env.PUBLIC_ORIGIN || `http://localhost:${port}`}\nДанные: ${resolve(process.env.DATA_DIR || './data')}\n${!passwordRequired ? 'Прямой вход без пароля.' : store.meta('password') ? 'Вход защищён паролем.' : 'Откройте сайт на этом компьютере и задайте пароль.'}`));
   const stop = () => server.close(() => { store.close(); process.exit(0); }); process.on('SIGTERM', stop); process.on('SIGINT', stop);
 }

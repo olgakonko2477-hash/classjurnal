@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { createApp } from '../server.js';
 
 const dir=mkdtempSync(join(tmpdir(),'journal-browser-'));
-const {server,store}=await createApp({dataDir:dir,password:'browser-test-password'});
+const {server,store}=await createApp({dataDir:dir});
 await new Promise(r=>server.listen(0,'127.0.0.1',r));
 const origin=`http://127.0.0.1:${server.address().port}`;
 const browser=await chromium.launch({channel:process.env.BROWSER_CHANNEL||(process.platform==='win32'?'msedge':undefined),headless:true});
@@ -15,7 +15,7 @@ const errors=[];
 try{
   const context=await browser.newContext({viewport:{width:1440,height:1000},locale:'ru-RU'});
   const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));
-  await page.goto(origin);await page.getByLabel('Пароль',{exact:true}).fill('browser-test-password');await page.getByRole('button',{name:'Открыть журнал',exact:true}).click();
+  await page.goto(origin);await expect(page.getByRole('button',{name:'Настроить учебный год'})).toBeVisible();await expect(page.locator('#login-form')).toHaveCount(0);
   await page.getByRole('button',{name:'Настроить учебный год'}).click();
   const f=page.locator('#dialog-form');
   await f.locator('[name=name]').fill('2026–2027');await f.locator('[name=start]').fill('2026-09-01');await f.locator('[name=end]').fill('2027-08-31');
@@ -51,7 +51,7 @@ try{
   await page.getByRole('button',{name:'Выгрузить',exact:true}).click();const download=page.waitForEvent('download');await page.getByRole('link',{name:/Таблица Excel/}).click();await (await download).saveAs(join(output,'journal.xlsx'));
   await page.getByRole('button',{name:/Печать \/ сохранить PDF/}).click();await page.emulateMedia({media:'print'});await page.pdf({path:join(output,'journal.pdf'),preferCSSPageSize:true,printBackground:true});assert.ok(await page.locator('#print-area .print-section').count()>=3);await page.emulateMedia({media:'screen'});
   // Separate authenticated browser session sees the same server data.
-  const mobile=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,locale:'ru-RU'});const phone=await mobile.newPage();phone.on('pageerror',e=>errors.push(e.message));await phone.goto(origin);await phone.getByLabel('Пароль',{exact:true}).fill('browser-test-password');await phone.getByRole('button',{name:'Открыть журнал',exact:true}).click();await phone.locator('[data-filter=month]').selectOption('2026-09');await phone.getByRole('button',{name:'Один урок',exact:true}).click();await phone.locator('.student-mark-row').first().click();await phone.locator('#dialog-form [name=grades]').fill('5 5');await phone.locator('#dialog-form').getByRole('button',{name:'Сохранить',exact:true}).click();
+  const mobile=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,locale:'ru-RU'});const phone=await mobile.newPage();phone.on('pageerror',e=>errors.push(e.message));await phone.goto(origin);await phone.locator('[data-filter=month]').selectOption('2026-09');await phone.getByRole('button',{name:'Один урок',exact:true}).click();await phone.locator('.student-mark-row').first().click();await phone.locator('#dialog-form [name=grades]').fill('5 5');await phone.locator('#dialog-form').getByRole('button',{name:'Сохранить',exact:true}).click();
   assert.ok(await phone.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'Mobile page overflows');await phone.screenshot({path:join(output,'journal-mobile.png'),fullPage:true});
   await phone.setViewportSize({width:360,height:800});assert.ok(await phone.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'360px page overflows');
   await page.getByRole('button',{name:'Обновить',exact:true}).click();await expect(page.locator('.mark-cell').first()).toHaveText(/5\s*5/);
