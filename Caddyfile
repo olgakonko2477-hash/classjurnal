@@ -1,0 +1,4 @@
+{$JOURNAL_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy journal:3000
+}
