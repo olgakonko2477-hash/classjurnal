@@ -6,9 +6,16 @@ import { tmpdir } from 'node:os';
 import { createApp } from '../server.js';
 
 const dir=mkdtempSync(join(tmpdir(),'journal-browser-'));
-const {server,store}=await createApp({dataDir:dir});
-await new Promise(r=>server.listen(0,'127.0.0.1',r));
-const origin=`http://127.0.0.1:${server.address().port}`;
+let server,store,mf,origin;
+if(process.env.JOURNAL_TEST_CLOUD==='true') {
+  const {Miniflare,cloudOptions}=await import('./miniflare-options.js');
+  mf=new Miniflare(cloudOptions(dir));
+  origin=(await mf.ready).origin;
+} else {
+  ({server,store}=await createApp({dataDir:dir}));
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  origin=`http://127.0.0.1:${server.address().port}`;
+}
 const browser=await chromium.launch({channel:process.env.BROWSER_CHANNEL||(process.platform==='win32'?'msedge':undefined),headless:true});
 const output=resolve('test-results');mkdirSync(output,{recursive:true});
 const errors=[];
@@ -34,9 +41,9 @@ try{
   await f.getByRole('button',{name:'Создать расписание'}).click();
   await page.locator('[data-filter=month]').selectOption('2026-09');
   await page.locator('.mark-cell').first().click();await f.locator('[name=grades]').fill('5 4');await f.locator('[name=status][value=present]').check();await f.getByRole('button',{name:'Сохранить',exact:true}).click();
-  assert.match(await page.locator('.mark-cell').first().innerText(),/5/);
+  await expect(page.locator('.mark-cell').first()).toHaveText(/5/);
   await page.locator('thead button').first().click();await f.locator('[name=topic]').fill('Натуральные числа и шкалы');await f.locator('[name=homework]').fill('§ 1, упражнения 12, 15. Подготовить примеры из жизни.');await f.getByRole('button',{name:'Сохранить урок'}).click();
-  await page.reload();await page.locator('.journal-table').waitFor();assert.match(await page.locator('.mark-cell').first().innerText(),/5/);
+  await expect(page.locator('#modal')).not.toBeVisible();await page.reload();await expect(page.locator('.mark-cell').first()).toHaveText(/5/);
   // Failed save keeps the edit available for a retry.
   await page.locator('.mark-cell').first().click();await f.locator('[name=grades]').fill('5 4');
   await page.route('**/api/action',route=>route.abort());await f.getByRole('button',{name:'Сохранить',exact:true}).click();await expect(f.locator('.form-error')).toContainText('Нет связи');await expect(f.locator('[name=grades]')).toHaveValue('5 4');
@@ -51,7 +58,7 @@ try{
   await page.getByRole('button',{name:'Выгрузить',exact:true}).click();const download=page.waitForEvent('download');await page.getByRole('link',{name:/Таблица Excel/}).click();await (await download).saveAs(join(output,'journal.xlsx'));
   await page.getByRole('button',{name:/Печать \/ сохранить PDF/}).click();await page.emulateMedia({media:'print'});await page.pdf({path:join(output,'journal.pdf'),preferCSSPageSize:true,printBackground:true});assert.ok(await page.locator('#print-area .print-section').count()>=3);await page.emulateMedia({media:'screen'});
   // Separate authenticated browser session sees the same server data.
-  const mobile=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,locale:'ru-RU'});const phone=await mobile.newPage();phone.on('pageerror',e=>errors.push(e.message));await phone.goto(origin);await phone.locator('[data-filter=month]').selectOption('2026-09');await phone.getByRole('button',{name:'Один урок',exact:true}).click();await phone.locator('.student-mark-row').first().click();await phone.locator('#dialog-form [name=grades]').fill('5 5');await phone.locator('#dialog-form').getByRole('button',{name:'Сохранить',exact:true}).click();
+  const mobile=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,locale:'ru-RU'});const phone=await mobile.newPage();phone.on('pageerror',e=>errors.push(e.message));await phone.goto(origin);await phone.locator('[data-filter=month]').selectOption('2026-09');await phone.getByRole('button',{name:'Один урок',exact:true}).click();await phone.locator('#single-select').selectOption(lessons[0].id);await phone.locator('.student-mark-row').first().click();await phone.locator('#dialog-form [name=grades]').fill('5 5');await phone.locator('#dialog-form').getByRole('button',{name:'Сохранить',exact:true}).click();await expect(phone.locator('#modal')).not.toBeVisible();
   assert.ok(await phone.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'Mobile page overflows');await phone.screenshot({path:join(output,'journal-mobile.png'),fullPage:true});
   await phone.setViewportSize({width:360,height:800});assert.ok(await phone.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),'360px page overflows');
   await page.getByRole('button',{name:'Обновить',exact:true}).click();await expect(page.locator('.mark-cell').first()).toHaveText(/5\s*5/);
@@ -59,4 +66,4 @@ try{
   await page.getByRole('button',{name:'Расписание',exact:true}).click();await page.getByRole('button',{name:'Удалить шаблон',exact:true}).click();await page.locator('#dialog-form').getByRole('button',{name:'Удалить шаблон',exact:true}).click();await page.getByRole('button',{name:'Журнал',exact:true}).click();assert.ok(await page.locator('.mark-cell').count()>0,'History should be kept');
   assert.deepEqual(errors,[]);console.log('PASS: onboarding, class, 30 pupils, recurring lessons, grades, topics, persistence, quarter, XLSX/PDF, 2 devices, mobile 360/390px, template deletion.');
   await context.close();await mobile.close();
-}finally{await browser.close();await new Promise(r=>server.close(r));store.close();rmSync(dir,{recursive:true,force:true});}
+}finally{await browser.close();if(mf)await mf.dispose();else{await new Promise(r=>server.close(r));store.close();}assert.ok(dir.startsWith(join(tmpdir(),'journal-browser-')));rmSync(dir,{recursive:true,force:true});}

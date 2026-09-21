@@ -14,9 +14,14 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run build
+      - run: npm run test:cloud
       - run: npm test
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
+      - run: npm run test:browser
+        env:
+          JOURNAL_TEST_CLOUD: "true"
       - run: docker build -t teacher-journal:test .
       - uses: actions/upload-artifact@v4
         if: always()
